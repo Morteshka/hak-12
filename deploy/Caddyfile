@@ -1,0 +1,6 @@
+# HTTPS для сайта (нужен для Telegram Mini App). Сертификат Let's Encrypt Caddy получает и продлевает сам.
+# Домен — из SITE_DOMAIN в .env, например 138-124-14-110.sslip.io (бесплатный адрес на IP сервера, покупать не нужно).
+{$SITE_DOMAIN} {
+	encode gzip
+	reverse_proxy frontend:80
+}

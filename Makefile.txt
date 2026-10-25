@@ -1,0 +1,30 @@
+.PHONY: up down logs rebuild reset test dev-backend dev-bot dev-frontend
+
+up:            ## собрать и запустить всё (БД, API, бот, фронтенд)
+	@test -f .env || cp .env.example .env
+	docker compose up -d --build
+
+down:          ## остановить (данные сохраняются)
+	docker compose down
+
+logs:
+	docker compose logs -f --tail=100
+
+rebuild:
+	docker compose build --no-cache
+
+reset:         ## ОСТОРОЖНО: остановить и удалить данные БД
+	docker compose down -v
+
+test:
+	cd backend && go test ./...
+
+# локальная разработка без Docker (нужен запущенный PostgreSQL и экспортированные переменные из .env)
+dev-backend:
+	cd backend && go run ./cmd/server
+
+dev-bot:
+	cd backend && go run ./cmd/bot
+
+dev-frontend:
+	cd frontend && npm install && npm run dev

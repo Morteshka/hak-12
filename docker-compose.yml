@@ -1,0 +1,127 @@
+name: invoice-keeper
+
+x-backend-env: &backend-env
+  DATABASE_URL: postgres://${POSTGRES_USER:-invoice}:${POSTGRES_PASSWORD:-invoice}@db:5432/${POSTGRES_DB:-invoice}?sslmode=disable
+  TZ: ${TZ:-Europe/Moscow}
+  # за сколько дней до срока напоминать (по убыванию): за неделю, за 3 дня и за сутки
+  REMINDER_STAGES: ${REMINDER_STAGES:-7,3,1}
+  # дополнительные каналы (все необязательные)
+  WEBHOOK_URL: ${WEBHOOK_URL:-}
+  WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+  # тестовый приёмник webhook (/api/v1/webhook/echo) вызывается внутри сети Docker
+  INTERNAL_API_URL: http://backend:8080
+  TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+  TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+  # если с сервера не открывается Telegram: прокси (http://host:port или socks5://host:port) или зеркало Bot API
+  HTTPS_PROXY: ${TELEGRAM_PROXY:-}
+  HTTP_PROXY: ${TELEGRAM_PROXY:-}
+  NO_PROXY: db,backend,localhost,127.0.0.1
+  TELEGRAM_API_ENDPOINT: ${TELEGRAM_API_ENDPOINT:-}
+  PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
+  # проверка чеков (бот тоже принимает чеки): ИИ-модель необязательна
+  AI_PROVIDER: ${AI_PROVIDER:-anthropic}
+  AI_API_KEY: ${AI_API_KEY:-}
+  AI_MODEL: ${AI_MODEL:-}
+  AI_BASE_URL: ${AI_BASE_URL:-}
+  OCR_LANGS: ${OCR_LANGS:-rus+eng}
+  # почта: напоминания и «оплата проведена» (бот тоже шлёт письма, если оплату отметили кнопкой в Telegram)
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_FROM: ${SMTP_FROM:-}
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-invoice}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-invoice}
+      POSTGRES_DB: ${POSTGRES_DB:-invoice}
+    volumes:
+      - pgdata:/var/lib/postgresql/data   # данные переживают перезапуск
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    # у части хостингов заблокированы не все адреса Telegram: этот проходит (проверено curl --resolve).
+    # Другой рабочий адрес можно задать в .env: TELEGRAM_IP=...
+    extra_hosts:
+      - "api.telegram.org:${TELEGRAM_IP:-149.154.167.220}"
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      <<: *backend-env
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      ADMIN_LOGIN: ${ADMIN_LOGIN:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
+      SEED_DEMO: ${SEED_DEMO:-true}
+      DEMO_MODE: ${DEMO_MODE:-false}
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+      # код подтверждения на почту при регистрации: auto — если почта подключена, true — всегда, false — без кода
+      EMAIL_VERIFY: ${EMAIL_VERIFY:-auto}
+      DEMO_TIME_TRAVEL: ${DEMO_TIME_TRAVEL:-true}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+    ports:
+      # BACKEND_BIND=127.0.0.1 — закрыть API от интернета (сайт и Swagger продолжат работать через порт сайта)
+      - "${BACKEND_BIND:-0.0.0.0}:${BACKEND_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/v1/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  bot:
+    build: ./backend
+    command: ["/app/bot"]
+    restart: unless-stopped
+    # у части хостингов заблокированы не все адреса Telegram: этот проходит (проверено curl --resolve).
+    # Другой рабочий адрес можно задать в .env: TELEGRAM_IP=...
+    extra_hosts:
+      - "api.telegram.org:${TELEGRAM_IP:-149.154.167.220}"
+    depends_on:
+      backend: { condition: service_healthy }   # миграции уже применены
+    environment:
+      <<: *backend-env
+      JWT_SECRET: ${JWT_SECRET:-}               # тот же ключ, что у API: проверяет ссылки «Открыть бота»
+      CHECK_INTERVAL: ${CHECK_INTERVAL:-1m}
+      TELEGRAM_REQUIRE_LINK: ${TELEGRAM_REQUIRE_LINK:-true}
+      DEMO_TIME_TRAVEL: ${DEMO_TIME_TRAVEL:-true}
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+
+  # HTTPS (Telegram Mini App работает только по https): docker compose --profile https up -d
+  # В .env: SITE_DOMAIN=138-124-14-110.sslip.io и PUBLIC_URL=https://138-124-14-110.sslip.io
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["https"]
+    restart: unless-stopped
+    depends_on:
+      - frontend
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

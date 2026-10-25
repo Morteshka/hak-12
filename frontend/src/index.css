@@ -1,0 +1,156 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Цвета продукта. Светлая тема — как была; тёмная — фон и поверхности тёмные,
+   акцентные чёрные блоки и кнопки становятся светлыми (инверсия), статусы — приглушённые. */
+:root {
+  --ink: 0 0 0; --coal: 22 22 22; --paper: 255 255 255; --white: 255 255 255;
+  --mist: 242 242 242; --fog: 231 231 231; --line: 227 227 227; --muted: 110 110 110;
+  --paid: 191 235 207; --paid-ink: 44 122 75; --paid-soft: 238 249 242;
+  --overdue: 248 201 203; --overdue-ink: 178 58 65; --overdue-soft: 253 240 240;
+  --upcoming: 205 235 250; --upcoming-ink: 31 111 153; --upcoming-soft: 239 248 253;
+  --soon: 255 221 184; --soon-ink: 165 90 18; --soon-soft: 255 245 234;
+  color-scheme: light;
+}
+.dark {
+  --ink: 240 240 243; --coal: 226 226 231; --paper: 11 11 14; --white: 22 22 27;
+  --mist: 30 30 36; --fog: 40 40 47; --line: 46 46 54; --muted: 158 158 170;
+  --paid: 30 64 44; --paid-ink: 132 222 165; --paid-soft: 20 36 27;
+  --overdue: 78 32 37; --overdue-ink: 255 140 146; --overdue-soft: 40 21 24;
+  --upcoming: 22 54 76; --upcoming-ink: 130 200 240; --upcoming-soft: 17 30 40;
+  --soon: 78 54 22; --soon-ink: 255 186 112; --soon-soft: 38 29 18;
+  color-scheme: dark;
+}
+
+/* Акцентные чёрные блоки (подвал, карточка профиля, герои) в тёмной теме остаются тёмными:
+   внутри них возвращаются цвета светлой темы, поэтому белый текст и «стекло» работают как раньше. */
+.dark .keep-dark, .dark .panel-dark {
+  --ink: 0 0 0; --coal: 22 22 22; --paper: 255 255 255; --white: 255 255 255;
+  --mist: 242 242 242; --fog: 231 231 231; --line: 227 227 227; --muted: 110 110 110;
+  --paid: 191 235 207; --paid-ink: 44 122 75; --overdue: 248 201 203; --overdue-ink: 178 58 65;
+  --upcoming: 205 235 250; --upcoming-ink: 31 111 153; --soon: 255 221 184; --soon-ink: 165 90 18;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / .08);
+}
+
+/* Градиенты-декор из референса (голографические карты): только украшения, цвета продукта не меняются */
+:root {
+  --iri-aqua: linear-gradient(135deg, #2EE6D6 0%, #7CF7A8 48%, #EAFB7A 100%);
+  --iri-fuchsia: linear-gradient(135deg, #FF8A65 0%, #FF3D8B 45%, #B14CFF 100%);
+  --iri-sunset: linear-gradient(135deg, #FF8F70 0%, #FFC371 55%, #FFF27A 100%);
+  --iri-orange: linear-gradient(135deg, #FF6A00 0%, #FF9A2E 52%, #FFC966 100%);
+  --iri-amber: linear-gradient(135deg, #FF7A1A 0%, #FFA033 55%, #FFD070 100%);
+  --iri-holo: conic-gradient(from 200deg, #2EE6D6, #7CF7A8, #EAFB7A, #FFC371, #FF6F91, #FF3D8B, #B14CFF, #2EE6D6);
+}
+
+@layer base {
+  /* элемент сетки не растягивает страницу шире экрана (длинные названия, таблицы) */
+  .grid > * { min-width: 0; }
+  body { @apply bg-paper font-sans text-[15px] text-ink antialiased; transition: background-color .5s ease, color .5s ease; }
+  h1, h2, h3 { @apply font-display font-medium tracking-tight; }
+  :focus-visible { @apply outline-none ring-2 ring-ink ring-offset-2 ring-offset-paper; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+}
+
+@layer components {
+  .input {
+    @apply h-12 w-full rounded-control border border-line bg-white px-4 text-[15px] outline-none transition
+           placeholder:text-muted/60 focus:border-ink focus:ring-4 focus:ring-ink/5;
+  }
+  .label { @apply mb-1.5 block text-sm font-medium text-muted; }
+  .panel { @apply rounded-panel bg-mist p-5 sm:p-6; }
+  .panel-white { @apply rounded-panel border border-line bg-white p-5 sm:p-6; }
+  .panel-dark { @apply rounded-panel bg-ink p-5 text-white sm:p-6; }
+  .num { font-variant-numeric: tabular-nums; }
+  .no-scrollbar { scrollbar-width: none; }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  /* тонкая полоса прокрутки для длинных окон: видно, что ниже есть ещё, но без грубого системного ползунка */
+  .thin-scrollbar { scrollbar-width: thin; scrollbar-color: rgb(var(--muted) / .35) transparent; }
+  .thin-scrollbar::-webkit-scrollbar { width: 6px; }
+  .thin-scrollbar::-webkit-scrollbar-thumb { background: rgb(var(--muted) / .35); border-radius: 999px; }
+  .thin-scrollbar::-webkit-scrollbar-track, .thin-scrollbar::-webkit-scrollbar-button { background: transparent; display: none; }
+  /* «стекло» как на референсе 2 */
+  /* плавный подъём плашек при прокрутке (см. components/Reveal.tsx) */
+  .reveal {
+    opacity: 0;
+    translate: 0 28px;
+    transition: opacity 1s cubic-bezier(.22,1,.36,1), translate 1.1s cubic-bezier(.22,1,.36,1);
+    will-change: opacity, translate;
+  }
+  .reveal.reveal-in { opacity: 1; translate: 0 0; }
+  /* выпадающие списки: стрелка ближе к тексту */
+  .select {
+    @apply cursor-pointer appearance-none pl-4 pr-9;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236b6b6b' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+  }
+  .glass { @apply border border-white/15 bg-white/10 backdrop-blur-md; }
+  /* светлое «стекло» — для информационных плашек без призыва к действию */
+  .panel-glass {
+    @apply relative overflow-hidden rounded-panel border border-white/70 p-5 sm:p-6;
+    background: rgb(var(--white) / .55);
+    backdrop-filter: blur(22px) saturate(1.4);
+    -webkit-backdrop-filter: blur(22px) saturate(1.4);
+    box-shadow: 0 1px 0 rgb(var(--white) / .8) inset, 0 10px 30px -12px rgba(0,0,0,.10);
+  }
+  .panel-glass > * { position: relative; }
+  /* тонкая голографическая полоска (верх подвала, акценты) */
+  /* плавно гасит фоновый декор у шапки и подвала */
+  .fade-edges {
+    -webkit-mask-image: linear-gradient(to bottom, transparent, #000 90px, #000 78%, transparent);
+    mask-image: linear-gradient(to bottom, transparent, #000 90px, #000 78%, transparent);
+  }
+  .iri-hairline { height: 2px; background: linear-gradient(90deg, #FF6A00, #FF9A2E, #FFC966, #FF9A2E, #FF6A00); }
+  @keyframes hero-progress { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+  @keyframes spin-slow { to { transform: rotate(360deg); } }
+  @keyframes drift { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(18px,-14px) scale(1.06); } }
+  .animate-spin-slow { animation: spin-slow 28s linear infinite; }
+  .animate-drift { animation: drift 18s ease-in-out infinite; }
+}
+
+/* Цвета «ири» вне @layer: классы собираются динамически (iri-${tone}), и сборщик Tailwind
+   иначе выкидывает их из CSS как «неиспользуемые» — пропадали свечение у долларов и стеклянные карты. */
+.iri-aqua { background: var(--iri-aqua); }
+.iri-fuchsia { background: var(--iri-fuchsia); }
+.iri-sunset { background: var(--iri-sunset); }
+.iri-holo { background: var(--iri-holo); }
+.iri-orange { background: var(--iri-orange); }
+.iri-amber { background: var(--iri-amber); }
+/* оранжевое прозрачное стекло: карта пропускает фон, блик по кромке */
+.iri-glass {
+  background: linear-gradient(135deg, rgba(255,122,26,.62) 0%, rgba(255,166,64,.34) 55%, rgba(255,210,128,.22) 100%);
+  backdrop-filter: blur(14px) saturate(1.6);
+  -webkit-backdrop-filter: blur(14px) saturate(1.6);
+  border: 1px solid rgba(255,255,255,.55);
+  box-shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 -18px 30px -18px rgba(255,106,0,.35) inset, 0 24px 48px -16px rgba(255,106,0,.45);
+}
+
+/* Таблицы на телефоне: каждая строка — карточка, ячейки идут друг под другом */
+@media (max-width: 767px) {
+  .stack-table table { min-width: 0 !important; }
+  .stack-table thead { display: none; }
+  .stack-table tr { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 14px 20px; }
+  .stack-table td { display: block; padding: 0 !important; white-space: normal !important; text-align: left !important; }
+  .stack-table td:first-child, .stack-table td.stack-full { flex-basis: 100%; max-width: none; }
+  .stack-table td:last-child:not(:first-child) { margin-left: auto; }
+  .stack-table td:empty { display: none; }
+}
+
+/* Сайт открыт как Telegram Mini App: подвал не нужен, у Telegram своя рамка */
+.in-tg footer { display: none; }
+
+/* webhook: «сообщение» бежит от Invoice Keeper к сервису */
+.hook-flow::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 -35%;
+  width: 35%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, #ff8a2a, #ffd3a8);
+  animation: hook-flow 1.9s cubic-bezier(.45, 0, .25, 1) infinite;
+}
+@keyframes hook-flow { to { transform: translateX(400%); } }
+@media (prefers-reduced-motion: reduce) { .hook-flow::after { animation: none; left: 30%; } }

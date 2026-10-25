@@ -1,0 +1,1186 @@
+openapi: 3.0.3
+info:
+  title: Invoice Keeper API
+  version: 1.0.0
+  description: |
+    Напоминания о регулярных платежах. Роли: `admin` (задаётся в .env) и `user`.
+    Валюты RUB/USD/EUR учитываются отдельно, конвертации нет.
+    Статусы периода: `paid` (оплачено), `unpaid` (не оплачено), `overdue` (просрочено — со следующего дня после срока).
+
+    Эта документация (`GET /docs`, `GET /docs/openapi.yml`) доступна только администратору: без входа
+    `/docs` показывает форму входа администратора, после неё токен подставляется в «Try it out» автоматически.
+servers:
+  - url: /api/v1
+tags:
+  - { name: notifications, description: Уведомления внутри веб-панели (колокольчик) }
+  - name: auth
+  - name: recurring-payments
+  - name: services
+    description: Каталог услуг администратора — пользователь сам подключает нужные (подписка = личный регулярный платёж)
+  - name: payment-occurrences
+  - name: payments
+  - name: receipts
+    description: Проверка оплат по чекам — загрузка, автопроверка, решения администратора. Чеки хранятся всегда.
+  - name: users
+  - name: budgets
+  - name: settings
+  - name: logs
+  - name: docs
+security:
+  - bearerAuth: []
+paths:
+  /docs:
+    get:
+      tags: [docs]
+      summary: Swagger UI (только admin; без входа — форма входа администратора)
+      description: Токен берётся из заголовка Authorization или куки `ik_docs` (path=/api/v1/docs, SameSite=Strict).
+      responses:
+        '200': { description: HTML Swagger UI }
+        '401': { description: Не выполнен вход — HTML-форма входа }
+        '403': { description: Вошёл не администратор }
+  /docs/openapi.yml:
+    get:
+      tags: [docs]
+      summary: Спецификация OpenAPI (только admin)
+      responses:
+        '200': { description: YAML, content: { application/yaml: {} } }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Вход по логину и паролю
+      description: Защита от подбора — 10 неудачных попыток в один логин или 30 с одного IP за 15 минут, дальше 429 с заголовком Retry-After.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/TokenPair' } } } }
+        '401': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+  /auth/telegram:
+    post:
+      tags: [auth]
+      summary: Вход из Telegram Mini App
+      description: initData из Telegram WebApp. Подпись проверяется HMAC-SHA256 ключом бота, данные старше 24 часов отклоняются. 403 — Telegram ещё не подключён (войдите паролем один раз и вызовите /auth/telegram/link).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [init_data], properties: { init_data: { type: string } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/TokenPair' } } } }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /auth/telegram/link:
+    post:
+      tags: [auth]
+      summary: Подключить Telegram, открытый как Mini App, к текущему аккаунту
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [init_data], properties: { init_data: { type: string } } }
+      responses:
+        '204': { description: Подключён }
+        '401': { $ref: '#/components/responses/Error' }
+  /time:
+    get:
+      tags: [demo]
+      summary: Дата в системе (с учётом машины времени)
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  today: { type: string, format: date }
+                  real_today: { type: string, format: date }
+                  offset_days: { type: integer }
+                  enabled: { type: boolean }
+    put:
+      tags: [demo]
+      summary: Машина времени — сдвинуть дату системы на N дней вперёд (администратор)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [offset_days], properties: { offset_days: { type: integer, minimum: 0, maximum: 730 } } }
+      responses:
+        '200': { description: Новое состояние }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /imports/statement:
+    post:
+      tags: [imports]
+      summary: Банковская выписка (CSV или PDF до 5 МБ) → найденные регулярные списания (ничего не сохраняет)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { type: object, required: [file], properties: { file: { type: string, format: binary } } }
+      responses:
+        '200': { description: 'transactions, from, to, candidates[] (title, amount, currency, period, next_due, count, confidence, category, exists), monthly' }
+        '422': { $ref: '#/components/responses/Error' }
+  /imports/confirm:
+    post:
+      tags: [imports]
+      summary: Добавить выбранные платежи (пользователь — личные, администратор — общие)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                file: { type: string }
+                items:
+                  type: array
+                  maxItems: 50
+                  items:
+                    type: object
+                    properties:
+                      title: { type: string }
+                      amount: { type: string, example: '399.00' }
+                      currency: { type: string, enum: [RUB, USD, EUR] }
+                      period: { type: string, enum: [monthly, quarterly, yearly] }
+                      due_date: { type: string, format: date }
+      responses:
+        '201': { description: 'created[] и failed[] (строки с ошибкой)' }
+  /auth/refresh:
+    post:
+      tags: [auth]
+      summary: Новый access-токен по refresh-токену
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties: { refresh_token: { type: string } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/TokenPair' } } } }
+        '401': { $ref: '#/components/responses/Error' }
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: Текущий пользователь
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/User' } } } }
+        '401': { $ref: '#/components/responses/Error' }
+    patch:
+      tags: [auth]
+      summary: Сменить своё имя (логин). Учётная запись админа меняется только в .env
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login]
+              properties: { login: { type: string } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/User' } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Завершение текущей сессии
+      responses:
+        '204': { description: Сессия завершена }
+        '401': { $ref: '#/components/responses/Error' }
+
+  /auth/config:
+    get:
+      tags: [auth]
+      summary: Публичные настройки входа (разрешена ли регистрация)
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { registration_enabled: { type: boolean }, email_verification: { type: boolean, description: 'При регистрации на почту придёт код' } }
+  /auth/register:
+    post:
+      tags: [auth]
+      summary: Регистрация обычного пользователя (роль всегда user). Выключается ALLOW_REGISTRATION=false
+      description: Нужна почта и/или логин. Если логин не указан — логином станет почта.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                email: { type: string, format: email, example: anna@company.ru }
+                login: { type: string }
+                password: { type: string, minLength: 6 }
+      responses:
+        '201': { description: Создан и выполнен вход (почта не подключена или EMAIL_VERIFY=false), content: { application/json: { schema: { $ref: '#/components/schemas/TokenPair' } } } }
+        '202': { description: 'Код отправлен на почту — аккаунт создастся после POST /auth/register/confirm', content: { application/json: { schema: { $ref: '#/components/schemas/RegisterPending' } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /auth/register/confirm:
+    post:
+      tags: [auth]
+      summary: Код из письма — создаёт аккаунт и выполняет вход
+      description: Код из 6 цифр действует 15 минут, 5 попыток. Неверный код — 422 «invalid code, N attempts left».
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, code]
+              properties:
+                email: { type: string, format: email }
+                code: { type: string, example: '123456' }
+      responses:
+        '201': { description: Аккаунт создан, почта подтверждена, content: { application/json: { schema: { $ref: '#/components/schemas/TokenPair' } } } }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+  /auth/register/resend:
+    post:
+      tags: [auth]
+      summary: Отправить код ещё раз (не чаще раза в минуту, до 5 раз)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [email], properties: { email: { type: string, format: email } } }
+      responses:
+        '200': { description: Код отправлен, content: { application/json: { schema: { $ref: '#/components/schemas/RegisterPending' } } } }
+        '422': { $ref: '#/components/responses/Error' }
+  /webhook/echo:
+    post:
+      tags: [settings]
+      summary: Встроенный тестовый приёмник webhook
+      description: Принимает событие Invoice Keeper и отвечает 200. Если задан WEBHOOK_SECRET — проверяет подпись X-InvoiceKeeper-Signature (неверная — 401).
+      security: []
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/WebhookEvent' } } }
+      responses:
+        '200': { description: Получено }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+  /settings/webhook/deliveries:
+    get:
+      tags: [settings]
+      summary: Журнал отправок webhook (admin)
+      description: Последние отправки, новые сверху (хранится 200). Что ушло, куда, код и текст ответа, время, понятная причина ошибки.
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, default: 20, maximum: 200 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/WebhookDelivery' } }
+        '403': { $ref: '#/components/responses/Error' }
+  /auth/password:
+    post:
+      tags: [auth]
+      summary: Смена своего пароля (пароль админа задаётся только в .env)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [old_password, new_password]
+              properties:
+                old_password: { type: string }
+                new_password: { type: string, minLength: 6 }
+      responses:
+        '204': { description: Пароль изменён }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /audit-logs:
+    get:
+      tags: [logs]
+      summary: Логи — авторизация и действия (только admin). Синоним — GET /logs
+      description: |
+        Действия: login, login_failed, logout, register, password_change, create_payment, delete_payment,
+        mark_paid, unmark_paid, edit_date, update_receipt, create_user, update_user, delete_user,
+        update_budget, update_settings, notification_failed.
+      parameters:
+        - { name: from, in: query, description: 'С даты (включительно), YYYY-MM-DD', schema: { type: string, format: date } }
+        - { name: to, in: query, description: 'По дату (включительно), YYYY-MM-DD', schema: { type: string, format: date } }
+        - { name: user_id, in: query, schema: { type: integer } }
+        - { name: action, in: query, schema: { type: string, example: mark_paid } }
+        - { name: limit, in: query, schema: { type: integer, default: 300, maximum: 1000 } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/AuditLog' } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+  /logs:
+    get:
+      tags: [logs]
+      summary: То же, что GET /audit-logs (фильтры from, to, user_id, action, limit)
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { name: user_id, in: query, schema: { type: integer } }
+        - { name: action, in: query, schema: { type: string } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/AuditLog' } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+  /audit-logs/actions:
+    get:
+      tags: [logs]
+      summary: Действия, которые встречаются в журнале (для фильтра; только admin)
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { type: string } } } } }
+
+  /budgets:
+    get:
+      tags: [budgets]
+      summary: Мои бюджеты по валютам (бюджет личный у каждого пользователя)
+      parameters:
+        - { name: period, in: query, schema: { type: string, enum: [month, year] } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Budget' } } } } }
+    post:
+      tags: [budgets]
+      summary: Создать или обновить свой бюджет для пары (валюта, период)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currency, period, amount]
+              properties:
+                currency: { type: string, enum: [RUB, USD, EUR] }
+                period: { type: string, enum: [month, year] }
+                amount: { type: string, example: '120000.00' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Budget' } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /budgets/{id}:
+    delete:
+      tags: [budgets]
+      summary: Удалить свой бюджет
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '204': { description: Удалён }
+        '404': { $ref: '#/components/responses/Error' }
+  /budgets/status:
+    get:
+      tags: [budgets]
+      summary: План, факт и прогноз по каждой валюте за месяц или год
+      description: |
+        Считается по видимым платежам: у пользователя — общие платежи и его подписки, у admin — все.
+        * `fact` — сумма оплаченных периодов со сроком в выбранном периоде;
+        * `forecast` — все платежи периода: уже созданные и будущие по действующим регулярным платежам;
+        * `spent_percent` = fact / plan; `over_budget` — прогноз больше плана; `overspent` — факт больше плана.
+      parameters:
+        - { name: period, in: query, schema: { type: string, enum: [month, year], default: month } }
+        - { name: date, in: query, description: 'Любая дата внутри нужного месяца/года (по умолчанию сегодня)', schema: { type: string, format: date } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/BudgetStatus' } } } }
+
+  /settings:
+    get:
+      tags: [settings]
+      summary: Настройки уведомлений. Блок integrations — только для admin
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Settings' } } } }
+    patch:
+      tags: [settings]
+      summary: Изменить настройки. Пустая строка очищает значение
+      description: |
+        Личные поля — любой пользователь: `email`, `email_notifications`, `telegram_username` (@имя в Telegram).
+        Глобальные интеграции — только admin: `webhook_url`, `telegram_chat_id`
+        (значения из .env имеют приоритет и в панели не меняются).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email: { type: string, format: email }
+                email_notifications: { type: boolean }
+                telegram_username: { type: string, example: '@zeronid', description: 'Пустая строка отвязывает. После сохранения бот пишет владельцу @имени и просит подтвердить подключение' }
+                webhook_url: { type: string, example: 'https://example.com/hook' }
+                telegram_chat_id: { type: string }
+                payment_verification: { type: string, enum: ['off', auto, manual], description: 'Только admin. off — «Оплачено» без чека; auto — чек, чистый подтверждается сам; manual — решает администратор' }
+                smtp:
+                  type: object
+                  description: 'Только admin. Почтовый сервер для писем; host "" — отключить. Пароль хранится зашифрованным и не возвращается; пустой — оставить сохранённый.'
+                  properties:
+                    host: { type: string, example: smtp.yandex.ru }
+                    port: { type: integer, example: 465 }
+                    user: { type: string, example: invoice@yandex.ru }
+                    password: { type: string, description: пароль приложения }
+                    from: { type: string, example: 'Invoice Keeper <invoice@yandex.ru>' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Settings' } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /settings/test-notification:
+    post:
+      tags: [settings]
+      summary: Тестовое уведомление в канал (webhook — только admin)
+      description: |
+        `telegram` — в личный Telegram пользователя (нужна подтверждённая привязка) приходит напоминание
+        по его ближайшему неоплаченному платежу, в точности как настоящее, с кнопкой «Оплачено».
+        Отметка о доставке не ставится — плановое напоминание за 3 дня всё равно придёт.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel]
+              properties:
+                channel: { type: string, enum: [email, telegram, webhook] }
+                url: { type: string, description: 'webhook: проверить этот адрес, не сохраняя (admin)' }
+                to: { type: string, format: email, description: 'email: куда отправить тестовое письмо (другой адрес — admin)' }
+      responses:
+        '200': { description: 'Отправлено. Для webhook — {status: sent|failed, delivery: WebhookDelivery}' }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /settings/telegram/resend:
+    post:
+      tags: [settings]
+      summary: Повторить запрос «Это вы?» в Telegram
+      description: |
+        Бот отправит запрос на подтверждение ещё раз в течение нескольких секунд. Если бот ещё не получал
+        сообщений от этого @username (`profile.telegram_contact = false`), запрос уйдёт сразу после Start в боте.
+      responses:
+        '200': { description: Настройки после повтора }
+        '422': { $ref: '#/components/responses/Error' }
+
+  /recurring-payments:
+    get:
+      tags: [recurring-payments]
+      summary: Регулярные платежи — общие платежи и подписки
+      description: |
+        Пользователь видит общие платежи (`user_id: null`) и свои подписки; admin — все.
+      parameters:
+        - $ref: '#/components/parameters/Owner'
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/RecurringPayment' } } } } }
+        '401': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [recurring-payments]
+      summary: Создать регулярный платёж (только admin) — общий или личный для пользователя (`user_id`)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RecurringPaymentCreate' }
+      responses:
+        '201': { description: Создан, content: { application/json: { schema: { $ref: '#/components/schemas/RecurringPayment' } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /recurring-payments/{id}:
+    patch:
+      tags: [recurring-payments]
+      summary: Изменить платёж (admin) или автопродление своей подписки
+      description: |
+        Новые название, сумма и валюта применяются к неоплаченным периодам со сроком не раньше сегодня.
+        Смена периодичности или due_date перестраивает будущие неоплаченные периоды. Прошлые и оплаченные не меняются.
+        auto_renew=false — новые периоды не создаются, остаётся ближайший неоплаченный.
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/RecurringPaymentUpdate' } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RecurringPayment' } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+    delete:
+      tags: [recurring-payments]
+      summary: Прекратить платёж или отключить подписку. История сохраняется
+      description: |
+        Общий платёж прекращает только admin. Подписку отключает её владелец или admin
+        (чужая подписка для пользователя — 404).
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '204': { description: Удалён }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /services:
+    get:
+      tags: [services]
+      summary: Каталог услуг (все роли). Пользователь видит открытые услуги, admin — и скрытые
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Service' } } } } }
+    post:
+      tags: [services]
+      summary: Добавить услугу в каталог (только admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ServiceInput' }
+      responses:
+        '201': { description: Создана, content: { application/json: { schema: { $ref: '#/components/schemas/Service' } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /services/{id}:
+    patch:
+      tags: [services]
+      summary: Изменить услугу (только admin). Действующие подписки сохраняют свои условия
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ServiceInput' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Service' } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    delete:
+      tags: [services]
+      summary: Удалить услугу из каталога (только admin). Действующие подписки продолжают работать
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '204': { description: Удалена }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /services/{id}/subscribe:
+    post:
+      tags: [services]
+      summary: Подключить услугу — создаётся личная подписка текущего пользователя
+      description: |
+        Условия копируются из каталога. `trial_days = 0` — первый платёж сегодня (напоминание приходит сразу);
+        `trial_days = N` — первый платёж через N дней (`trial_until`), дальше по периодичности.
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '201': { description: Подключена, content: { application/json: { schema: { $ref: '#/components/schemas/RecurringPayment' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { description: Уже подключена, content: { application/json: { schema: { type: object, properties: { error: { type: string } } } } } }
+        '422': { description: Услуга скрыта, content: { application/json: { schema: { type: object, properties: { error: { type: string } } } } } }
+
+  /payment-occurrences:
+    get:
+      tags: [payment-occurrences]
+      summary: Список платежей по периодам (оплаченные, неоплаченные, просроченные)
+      description: Пользователь видит общие платежи и свои подписки; admin — все.
+      parameters:
+        - $ref: '#/components/parameters/Owner'
+        - { name: status, in: query, schema: { type: string, enum: [paid, unpaid, overdue, review] }, description: 'review — не оплачено, чек на проверке' }
+        - { name: currency, in: query, schema: { type: string, enum: [RUB, USD, EUR] } }
+        - { name: recurring_payment_id, in: query, schema: { type: integer } }
+        - { name: from, in: query, description: Срок не раньше, schema: { type: string, format: date } }
+        - { name: to, in: query, description: Срок не позже, schema: { type: string, format: date } }
+        - { name: order, in: query, schema: { type: string, enum: [asc, desc], default: asc } }
+        - { name: limit, in: query, schema: { type: integer, default: 1000 } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/PaymentOccurrence' } } } } }
+        '401': { $ref: '#/components/responses/Error' }
+  /payment-occurrences/{id}:
+    get:
+      tags: [payment-occurrences]
+      summary: Конкретный платёж (период)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/PaymentOccurrence' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+    patch:
+      tags: [payment-occurrences]
+      summary: Подтвердить/отменить оплату, исправить фактическую дату (admin и user)
+      description: |
+        * `{"paid": true}` — оплачено сегодня; `{"paid": true, "paid_at": "2026-10-20"}` — оплачено в указанную дату.
+        * `{"paid": false}` — отмена оплаты, дата очищается.
+        * `{"paid_at": "2026-10-21"}` — исправление фактической даты. Срок (`due_date`) не меняется, просрочка пересчитывается.
+        * `{"receipt_url": "https://…"}` — ссылка на чек; `""` — убрать. Можно вместе с оплатой.
+        * Дата оплаты не может быть в будущем.
+        * Общий платёж отмечает любой авторизованный; личную подписку — её владелец (и admin).
+        * Если включена проверка оплат (режим `auto` или `manual`), роль user подтверждает оплату только чеком —
+          `POST /payment-occurrences/{id}/receipts`; `paid`/`paid_at` от user вернут 422. Admin отмечает напрямую (ожидающий чек принимается).
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PaymentOccurrencePatch' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/PaymentOccurrence' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+
+  /payment-occurrences/{id}/receipts:
+    post:
+      tags: [receipts]
+      summary: Приложить чек к оплате (проверяется сразу)
+      description: |
+        Файл — фото (JPG, PNG, WebP) или PDF до 10 МБ. Распознавание: QR-код кассового чека ФНС, текст PDF, OCR (Tesseract), при `AI_API_KEY` — ИИ-модель.
+        Сверка: документ похож на платёжный, нет отказа/возврата, сумма (±0,01) и валюта совпадают, дата не в будущем и не раньше периода,
+        файл и номер операции не использовались для другого платежа.
+        Режим `auto`: все проверки пройдены → чек `approved`, платёж оплачен датой из чека. Иначе `pending` — решает администратор
+        (уведомление в Telegram с кнопками). Новый чек заменяет прежний, ожидающий проверки.
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+                note: { type: string, description: Комментарий для администратора }
+      responses:
+        '201': { description: Чек принят, content: { application/json: { schema: { $ref: '#/components/schemas/SubmitResult' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+    get:
+      tags: [receipts]
+      summary: Чеки этого платежа (user — свои, admin — все)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Receipt' } } } } }
+  /receipts:
+    get:
+      tags: [receipts]
+      summary: Чеки (admin — все, user — свои)
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [pending, approved, rejected] } }
+        - { name: limit, in: query, schema: { type: integer, default: 200, maximum: 500 } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Receipt' } } } } }
+  /receipts/{id}:
+    get:
+      tags: [receipts]
+      summary: Чек
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Receipt' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+  /receipts/{id}/file:
+    get:
+      tags: [receipts]
+      summary: Файл чека (`?download=1` — скачать)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: Файл, content: { image/jpeg: {}, image/png: {}, image/webp: {}, application/pdf: {} } }
+        '404': { $ref: '#/components/responses/Error' }
+  /receipts/{id}/history:
+    get:
+      tags: [receipts]
+      summary: История чека (записи журнала)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: OK }
+  /receipts/{id}/approve:
+    post:
+      tags: [receipts]
+      summary: Подтвердить оплату по чеку (admin)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                paid_at: { type: string, format: date, description: 'Дата оплаты; по умолчанию — из чека, иначе сегодня' }
+                comment: { type: string }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SubmitResult' } } } }
+        '409': { $ref: '#/components/responses/Error' }
+  /receipts/{id}/reject:
+    post:
+      tags: [receipts]
+      summary: Отклонить чек (admin, причина обязательна — её увидит пользователь)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [comment], properties: { comment: { type: string } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SubmitResult' } } } }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /receipts/{id}/recheck:
+    post:
+      tags: [receipts]
+      summary: Распознать чек заново (admin; решение не меняется)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SubmitResult' } } } }
+
+  /payments/summary:
+    get:
+      tags: [payments]
+      summary: Итоговые суммы по валютам (отдельно, без конвертации)
+      parameters:
+        - $ref: '#/components/parameters/Owner'
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  currencies: { type: array, items: { $ref: '#/components/schemas/CurrencySummary' } }
+
+  /payments/summary/months:
+    get:
+      tags: [payments]
+      summary: Итоги по месяцам и валютам — оплачено, просрочено, предстоит (без конвертации)
+      parameters:
+        - $ref: '#/components/parameters/Owner'
+        - { name: months, in: query, schema: { type: integer, default: 12, maximum: 36 }, description: 'Сколько месяцев назад, включая текущий' }
+        - { name: ahead, in: query, schema: { type: integer, default: 1, maximum: 12 }, description: 'Сколько месяцев вперёд' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  months: { type: array, items: { $ref: '#/components/schemas/MonthSummary' } }
+                  today: { type: string, format: date }
+
+  /notifications:
+    get:
+      tags: [notifications]
+      summary: Уведомления колокольчика текущего пользователя
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, default: 30, maximum: 100 } }
+        - { name: unread, in: query, schema: { type: string, enum: ['1'] }, description: 'Только непрочитанные' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Notification' } }
+                  unread: { type: integer }
+    delete:
+      tags: [notifications]
+      summary: Удалить прочитанные уведомления
+      responses:
+        '204': { description: OK }
+  /notifications/read:
+    post:
+      tags: [notifications]
+      summary: Отметить прочитанными (ids пусто — все)
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { ids: { type: array, items: { type: integer } } } } } }
+      responses:
+        '204': { description: OK }
+
+  /users:
+    get:
+      tags: [users]
+      summary: Список пользователей (только admin)
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/User' } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      tags: [users]
+      summary: Создать обычного пользователя (только admin). Почта обязательна
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login, email, password]
+              properties:
+                login: { type: string, example: ivan }
+                email: { type: string, format: email, example: ivan@company.ru }
+                password: { type: string, minLength: 6 }
+      responses:
+        '201': { description: Создан, content: { application/json: { schema: { $ref: '#/components/schemas/User' } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /users/{id}:
+    patch:
+      tags: [users]
+      summary: Изменить пользователя (только admin). Учётную запись админа менять нельзя
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                login: { type: string }
+                email: { type: string, format: email }
+                password: { type: string, minLength: 6 }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/User' } } } }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    delete:
+      tags: [users]
+      summary: Удалить пользователя (только admin)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '204': { description: Удалён }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    Id: { name: id, in: path, required: true, schema: { type: integer } }
+    Owner:
+      name: owner
+      in: query
+      description: '`shared` — только общие платежи, `mine` — только свои подписки, `<id>` — подписки пользователя (только admin). Пусто — все доступные.'
+      schema: { type: string }
+  responses:
+    Error:
+      description: Ошибка
+      content:
+        application/json:
+          schema:
+            type: object
+            properties: { error: { type: string } }
+  schemas:
+    ReceiptCheck:
+      type: object
+      properties:
+        code: { type: string, enum: [document, status, amount, currency, date, duplicate, ai] }
+        status: { type: string, enum: [ok, warn, fail] }
+        title: { type: string }
+        detail: { type: string }
+    Receipt:
+      type: object
+      properties:
+        id: { type: integer }
+        occurrence_id: { type: integer, nullable: true }
+        user_id: { type: integer, nullable: true }
+        submitted_by: { type: string }
+        source: { type: string, enum: [web, telegram] }
+        payment_title: { type: string, description: Снимок платежа на момент загрузки }
+        payment_amount: { type: string }
+        payment_currency: { type: string }
+        payment_due_date: { type: string, format: date, nullable: true }
+        owner_login: { type: string, nullable: true }
+        file_name: { type: string }
+        mime: { type: string }
+        size: { type: integer }
+        sha256: { type: string }
+        note: { type: string }
+        methods: { type: string, example: 'pdf,ai', description: 'qr, pdf, ocr, ai' }
+        ext_amount: { type: string, nullable: true }
+        ext_currency: { type: string, nullable: true }
+        ext_date: { type: string, format: date, nullable: true }
+        ext_operation_id: { type: string, nullable: true }
+        ext_payee: { type: string, nullable: true }
+        ext_text: { type: string }
+        ai_comment: { type: string }
+        checks: { type: array, items: { $ref: '#/components/schemas/ReceiptCheck' } }
+        score: { type: integer, minimum: 0, maximum: 100 }
+        status: { type: string, enum: [pending, approved, rejected] }
+        decided_by: { type: string, nullable: true }
+        decided_auto: { type: boolean }
+        decision_comment: { type: string }
+        decided_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+    SubmitResult:
+      type: object
+      properties:
+        receipt: { $ref: '#/components/schemas/Receipt' }
+        occurrence: { $ref: '#/components/schemas/PaymentOccurrence' }
+    LoginRequest:
+      type: object
+      required: [login, password]
+      properties:
+        login: { type: string, example: user, description: Логин или почта }
+        password: { type: string, example: user123 }
+    RegisterPending:
+      type: object
+      properties:
+        status: { type: string, example: verify }
+        email: { type: string, format: email }
+        expires_in: { type: integer, description: секунд до истечения кода, example: 900 }
+        resend_in: { type: integer, description: через сколько секунд можно запросить новый код, example: 60 }
+    WebhookDelivery:
+      type: object
+      properties:
+        id: { type: integer }
+        event: { type: string, example: payment.paid }
+        payment_id: { type: integer, nullable: true }
+        name: { type: string }
+        url: { type: string }
+        ok: { type: boolean }
+        status_code: { type: integer, description: 0 — ответа не было }
+        duration_ms: { type: integer }
+        error: { type: string, description: причина неудачи по-русски }
+        payload: { type: string, description: отправленный JSON }
+        response: { type: string, description: начало ответа приёмника }
+        created_at: { type: string, format: date-time }
+    TokenPair:
+      type: object
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        token_type: { type: string, example: Bearer }
+        expires_in: { type: integer, description: секунды }
+        user: { $ref: '#/components/schemas/User' }
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        login: { type: string }
+        role: { type: string, enum: [admin, user] }
+        is_system: { type: boolean }
+        email: { type: string, nullable: true }
+        email_notifications: { type: boolean }
+        telegram_id: { type: integer, nullable: true }
+        telegram_username: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+    RecurringPaymentCreate:
+      type: object
+      required: [title, amount, currency, due_date]
+      properties:
+        title: { type: string, example: Аренда офиса }
+        amount: { type: string, example: '85000.00', description: Десятичное число, не более 2 знаков }
+        currency: { type: string, enum: [RUB, USD, EUR] }
+        period: { type: string, enum: [monthly, quarterly, yearly, once], default: monthly, description: 'once — разовый платёж (один период, без продления)' }
+        due_date: { type: string, format: date, description: Дата ближайшей оплаты. День месяца запоминается; если такого числа нет в месяце — последний день месяца }
+        user_id: { type: integer, nullable: true, description: 'Личный платёж этого пользователя; не указано — общий платёж' }
+    RecurringPayment:
+      type: object
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        amount: { type: string }
+        currency: { type: string, enum: [RUB, USD, EUR] }
+        period: { type: string }
+        day_of_month: { type: integer }
+        first_due_date: { type: string, format: date }
+        user_id: { type: integer, nullable: true, description: 'null — общий платёж' }
+        owner_login: { type: string, nullable: true }
+        service_id: { type: integer, nullable: true, description: 'Подписка на услугу из каталога' }
+        trial_until: { type: string, format: date, nullable: true, description: 'Конец пробного периода = дата первой оплаты' }
+        auto_renew: { type: boolean, description: 'false — новые периоды не создаются (подписка не продлевается)' }
+        created_at: { type: string, format: date-time }
+    RecurringPaymentUpdate:
+      type: object
+      description: Все поля необязательны. Пользователь может менять только auto_renew своей подписки.
+      properties:
+        title: { type: string }
+        amount: { type: string }
+        currency: { type: string, enum: [RUB, USD, EUR] }
+        period: { type: string, enum: [monthly, quarterly, yearly, once] }
+        due_date: { type: string, format: date, description: 'Новая дата ближайшей оплаты: будущие неоплаченные периоды строятся заново' }
+        auto_renew: { type: boolean }
+    MonthSummary:
+      type: object
+      properties:
+        month: { type: string, example: '2026-10' }
+        currency: { type: string, enum: [RUB, USD, EUR] }
+        total: { type: string }
+        paid: { type: string }
+        overdue: { type: string }
+        upcoming: { type: string }
+        count: { type: integer }
+        count_paid: { type: integer }
+        count_overdue: { type: integer }
+    Notification:
+      type: object
+      properties:
+        id: { type: integer }
+        kind: { type: string, enum: [reminder, paid, unpaid, created, receipt] }
+        level: { type: string, enum: [info, success, warn, danger] }
+        title: { type: string }
+        body: { type: string }
+        occurrence_id: { type: integer, nullable: true }
+        receipt_id: { type: integer, nullable: true }
+        read_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+    Service:
+      type: object
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        description: { type: string }
+        amount: { type: string }
+        currency: { type: string, enum: [RUB, USD, EUR] }
+        period: { type: string, enum: [monthly, quarterly, yearly] }
+        trial_days: { type: integer, description: '0 — первый платёж сразу при подключении; N — пробный период N дней' }
+        active: { type: boolean, description: 'false — скрыта из каталога' }
+        subscription_id: { type: integer, nullable: true, description: 'Подписка текущего пользователя на эту услугу' }
+        subscribers: { type: integer, description: 'Активных подписок' }
+    ServiceInput:
+      type: object
+      properties:
+        title: { type: string, example: Облачное хранилище 1 ТБ }
+        description: { type: string }
+        amount: { type: string, example: '299.00' }
+        currency: { type: string, enum: [RUB, USD, EUR] }
+        period: { type: string, enum: [monthly, quarterly, yearly], default: monthly }
+        trial_days: { type: integer, minimum: 0, maximum: 365, default: 0 }
+        active: { type: boolean, default: true }
+    PaymentOccurrence:
+      type: object
+      properties:
+        id: { type: integer }
+        recurring_payment_id: { type: integer }
+        title: { type: string }
+        amount: { type: string }
+        currency: { type: string, enum: [RUB, USD, EUR] }
+        due_date: { type: string, format: date }
+        paid_at: { type: string, format: date, nullable: true }
+        paid_by: { type: string, nullable: true }
+        status: { type: string, enum: [paid, unpaid, overdue] }
+        overdue_days: { type: integer, description: Дней просрочки (для оплаченных — на сколько оплатили позже срока) }
+        recurring_deleted: { type: boolean }
+        user_id: { type: integer, nullable: true }
+        owner_login: { type: string, nullable: true }
+        service_id: { type: integer, nullable: true }
+        trial_until: { type: string, format: date, nullable: true }
+        reminder_sent_at: { type: string, format: date-time, nullable: true }
+        receipt_url: { type: string, nullable: true, description: Ссылка на чек }
+        receipt_status: { type: string, nullable: true, enum: [pending, approved, rejected], description: 'Статус последнего приложенного чека (pending — на проверке)' }
+        future: { type: boolean, description: 'Будущий период: срок ещё не наступил (свой статус «предстоит»)' }
+        period: { type: string, enum: [monthly, quarterly, yearly, once] }
+        auto_renew: { type: boolean }
+    PaymentOccurrencePatch:
+      type: object
+      properties:
+        paid: { type: boolean }
+        paid_at: { type: string, format: date }
+        receipt_url: { type: string, description: 'http(s)-ссылка на чек; пустая строка — убрать' }
+    CurrencySummary:
+      type: object
+      properties:
+        currency: { type: string, enum: [RUB, USD, EUR] }
+        total: { type: string }
+        paid: { type: string }
+        unpaid: { type: string }
+        overdue: { type: string }
+        count_total: { type: integer }
+        count_paid: { type: integer }
+        count_unpaid: { type: integer }
+        count_overdue: { type: integer }
+    AuditLog:
+      type: object
+      properties:
+        id: { type: integer }
+        user_id: { type: integer, nullable: true }
+        actor: { type: string }
+        action: { type: string, example: mark_paid }
+        entity_type: { type: string, example: payment_occurrence }
+        entity_id: { type: string }
+        details: { type: object, additionalProperties: true, description: JSONB }
+        ip: { type: string }
+        user_agent: { type: string }
+        created_at: { type: string, format: date-time }
+    Budget:
+      type: object
+      properties:
+        id: { type: integer }
+        user_id: { type: integer, nullable: true, description: null — общий бюджет }
+        currency: { type: string, enum: [RUB, USD, EUR] }
+        period: { type: string, enum: [month, year] }
+        amount: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    BudgetStatus:
+      type: object
+      properties:
+        period: { type: string, enum: [month, year] }
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        currencies:
+          type: array
+          items:
+            type: object
+            properties:
+              currency: { type: string, enum: [RUB, USD, EUR] }
+              budget_id: { type: integer, nullable: true }
+              plan: { type: string, nullable: true }
+              fact: { type: string }
+              forecast: { type: string }
+              remaining: { type: string, nullable: true }
+              spent_percent: { type: number, nullable: true }
+              forecast_percent: { type: number, nullable: true }
+              over_budget: { type: boolean }
+              overspent: { type: boolean }
+              count_total: { type: integer }
+              count_paid: { type: integer }
+    Settings:
+      type: object
+      properties:
+        profile:
+          type: object
+          properties:
+            login: { type: string }
+            email: { type: string, nullable: true }
+            email_notifications: { type: boolean }
+            telegram_username: { type: string, nullable: true }
+            telegram_status: { type: string, enum: [none, pending, linked], description: 'pending — бот ждёт подтверждения «Это я» в Telegram' }
+            telegram_bot: { type: string, description: '@имя бота без «@»' }
+            telegram_contact: { type: boolean, description: 'Бот уже получал сообщения от этого @username — запрос дойдёт' }
+            telegram_start_link: { type: string, description: 'Ссылка t.me/<бот>?start=<код> (пока Telegram не подключён): Start в боте подключает сразу, код действует сутки' }
+        integrations:
+          type: object
+          description: Только для admin
+          properties:
+            webhook_url: { type: string }
+            webhook_from_env: { type: boolean }
+            telegram_chat_id: { type: string }
+            telegram_chat_from_env: { type: boolean }
+        channels:
+          type: object
+          properties:
+            email: { type: boolean }
+            telegram: { type: boolean, description: 'Бот настроен — личные напоминания работают' }
+            telegram_chat: { type: boolean, description: 'Задан общий чат' }
+            webhook: { type: boolean, description: Только для admin }
+            reminder_days: { type: integer }
+    WebhookEvent:
+      type: object
+      description: Тело POST на webhook (заголовки X-InvoiceKeeper-Event и, при WEBHOOK_SECRET, X-InvoiceKeeper-Signature)
+      properties:
+        event: { type: string, enum: [payment.created, subscription.created, subscription.cancelled, payment.reminder, payment.paid, payment.unpaid, payment.date_fixed, test] }
+        payment_id: { type: integer }
+        recurring_payment_id: { type: integer }
+        name: { type: string }
+        amount: { type: string }
+        currency: { type: string }
+        due_date: { type: string, format: date }
+        status: { type: string, enum: [paid, unpaid, overdue] }
+        paid_at: { type: string, format: date }
+        receipt_url: { type: string }
+        actor: { type: string }
+        owner: { type: string, description: 'Владелец подписки (нет — общий платёж)' }
+        timestamp: { type: string, format: date-time }
