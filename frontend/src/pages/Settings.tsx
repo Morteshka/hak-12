@@ -420,8 +420,16 @@ const payloadExample = `{
   "timestamp": "2026-10-30T09:00:00Z"
 }`
 
-type PresetKey = 'yandex' | 'mailru' | 'gmail' | 'other'
+type PresetKey = 'brevo' | 'yandex' | 'mailru' | 'gmail' | 'other'
 const MAIL_PRESETS: Record<PresetKey, { name: string; host: string; port: number; steps: ReactNode[] }> = {
+  brevo: {
+    name: 'Brevo (HTTPS)', host: 'api.brevo.com', port: 443, steps: [
+      <>Подходит, если хостинг закрыл почтовые порты: письма уходят через обычный HTTPS. Бесплатно — 300 писем в день.</>,
+      <>Зарегистрируйтесь на <a className="font-semibold underline underline-offset-4" href="https://www.brevo.com" target="_blank" rel="noreferrer">brevo.com</a> и подтвердите аккаунт по письму.</>,
+      <>«Senders, Domains» → добавьте свою почту отправителя (например Gmail) и подтвердите её по ссылке из письма.</>,
+      <>«SMTP &amp; API» → «API Keys» → создайте ключ. Ниже: почта — подтверждённый отправитель, ключ — в поле пароля.</>,
+    ],
+  },
   yandex: {
     name: 'Яндекс', host: 'smtp.yandex.ru', port: 465, steps: [
       <>В Яндекс ID откройте «Безопасность» → <a className="font-semibold underline underline-offset-4" href="https://id.yandex.ru/security/app-passwords" target="_blank" rel="noreferrer">«Пароли приложений»</a> → «Почта» и создайте пароль.</>,
@@ -450,7 +458,7 @@ const MAIL_PRESETS: Record<PresetKey, { name: string; host: string; port: number
   },
 }
 const presetOf = (m: MailSettings): PresetKey =>
-  (Object.keys(MAIL_PRESETS) as PresetKey[]).find((k) => k !== 'other' && MAIL_PRESETS[k].host === m.host) ?? (m.host ? 'other' : 'yandex')
+  (Object.keys(MAIL_PRESETS) as PresetKey[]).find((k) => k !== 'other' && MAIL_PRESETS[k].host === m.host) ?? (m.host ? 'other' : 'brevo')
 
 /**
  * Администратор: почта для уведомлений. Подключается прямо здесь — без правки .env и перезапуска.
@@ -528,20 +536,20 @@ function MailCard({ data, onChange }: { data: SettingsData; onChange: (d: Settin
                 </button>
               ))}
             </div>
-            <div className="mt-4 text-sm font-semibold">2. Создайте пароль приложения</div>
+            <div className="mt-4 text-sm font-semibold">{preset === 'brevo' ? '2. Подключите Brevo' : '2. Создайте пароль приложения'}</div>
             <ol className="mt-2 space-y-2 text-sm text-muted">
               {MAIL_PRESETS[preset].steps.map((st, i) => (
                 <li key={i} className="flex gap-2.5"><span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-mist text-[11px] font-semibold text-ink">{i + 1}</span><span>{st}</span></li>
               ))}
             </ol>
-            <p className="mt-4 rounded-[14px] bg-soon px-3.5 py-2.5 text-xs text-soon-ink">Обычный пароль от почты не подойдёт — почтовые сервисы пускают программы только по паролю приложения. Он хранится в базе зашифрованным.</p>
+            <p className="mt-4 rounded-[14px] bg-soon px-3.5 py-2.5 text-xs text-soon-ink">{preset === 'brevo' ? 'Ключ хранится в базе зашифрованным. Если тест с Яндексом/Gmail пишет «нет ответа» — хостинг закрыл почтовые порты, выбирайте Brevo.' : 'Обычный пароль от почты не подойдёт — почтовые сервисы пускают программы только по паролю приложения. Он хранится в базе зашифрованным.'}</p>
           </div>
 
           <form onSubmit={saveAndTest} className="space-y-3">
             <div className="text-sm font-semibold">3. Введите данные и проверьте</div>
-            <Field label="Почта (логин)"><Input type="email" value={user} onChange={(e) => setUser(e.target.value)} placeholder="invoice@yandex.ru" autoComplete="off" /></Field>
-            <Field label="Пароль приложения" hint={m.has_password ? 'Сохранён. Оставьте пустым, чтобы не менять.' : undefined}>
-              <Input type="password" value={pass} onChange={(e) => setPass(e.target.value.replace(/\s/g, ''))} placeholder={m.has_password ? '••••••••••••' : 'пароль приложения'} autoComplete="new-password" />
+            <Field label={preset === 'brevo' ? 'Почта отправителя (подтверждена в Brevo)' : 'Почта (логин)'}><Input type="email" value={user} onChange={(e) => setUser(e.target.value)} placeholder="invoice@yandex.ru" autoComplete="off" /></Field>
+            <Field label={preset === 'brevo' ? 'API-ключ Brevo' : 'Пароль приложения'} hint={m.has_password ? 'Сохранён. Оставьте пустым, чтобы не менять.' : undefined}>
+              <Input type="password" value={pass} onChange={(e) => setPass(e.target.value.replace(/\s/g, ''))} placeholder={m.has_password ? '••••••••••••' : preset === 'brevo' ? 'xkeysib-…' : 'пароль приложения'} autoComplete="new-password" />
             </Field>
             <div className="grid grid-cols-[1fr_110px] gap-3">
               <Field label="SMTP-сервер"><Input value={host} onChange={(e) => { setHost(e.target.value); setPreset('other') }} placeholder="smtp.yandex.ru" /></Field>

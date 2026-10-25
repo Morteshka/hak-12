@@ -73,12 +73,14 @@ func humanMailError(err error, c SMTPConfig) string {
 	var ne net.Error
 	var dnsErr *net.DNSError
 	switch {
+	case strings.HasPrefix(msg, "brevo"):
+		return humanBrevoError(msg)
 	case strings.Contains(msg, "535") || strings.Contains(low, "authentication") || strings.Contains(low, "auth") && strings.Contains(low, "fail"):
 		return "неверный логин или пароль. Для Яндекса, Mail.ru и Gmail нужен пароль приложения, а не обычный пароль от почты"
 	case errors.As(err, &dnsErr):
 		return fmt.Sprintf("почтовый сервер %s не найден — проверьте адрес", c.Host)
 	case errors.As(err, &ne) && ne.Timeout(), strings.Contains(low, "timeout"):
-		return fmt.Sprintf("нет ответа от %s:%d. Проверьте адрес и порт; некоторые хостинги закрывают исходящие порты 465 и 587", c.Host, c.Port)
+		return fmt.Sprintf("нет ответа от %s:%d — похоже, хостинг закрыл исходящие почтовые порты. Выберите «Brevo (HTTPS)»: он отправляет письма через обычный HTTPS и работает на любом хостинге", c.Host, c.Port)
 	case strings.Contains(low, "connection refused"):
 		return fmt.Sprintf("%s:%d не принимает подключения — проверьте порт (обычно 465)", c.Host, c.Port)
 	case strings.Contains(low, "certificate") || strings.Contains(low, "tls") || strings.Contains(low, "first record does not look like"):

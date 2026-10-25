@@ -27,7 +27,11 @@ type SMTPConfig struct {
 func (c SMTPConfig) Configured() bool { return c.Host != "" && c.From != "" }
 
 // Send — письмо в HTML. Порт 465 — сразу TLS, иначе (587/25) — STARTTLS, если сервер его поддерживает.
+// Сервер api.brevo.com — отправка через HTTPS API Brevo (порт 443): работает, даже если хостинг закрыл почтовые порты.
 func (c SMTPConfig) Send(to, subject, htmlBody string) error {
+	if strings.EqualFold(c.Host, BrevoHost) {
+		return c.sendBrevo(to, subject, htmlBody)
+	}
 	addr := net.JoinHostPort(c.Host, strconv.Itoa(c.Port))
 	tlsCfg := &tls.Config{ServerName: c.Host, MinVersion: tls.VersionTLS12}
 
