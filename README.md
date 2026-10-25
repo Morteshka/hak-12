@@ -1,5 +1,13 @@
 # Invoice Keeper — напоминания о регулярных платежах
 
+<p align="center">
+  <a href="http://138.124.14.110:3000/"><b>🌐 Открыть демо: Invoice Keeper — регулярные платежи без просрочек</b></a>
+</p>
+
+<p align="center">
+  Тестовый вход: <code>user</code> / <code>user123</code> · бот в Telegram: <a href="https://t.me/regular_paymentsBot">@regular_paymentsBot</a>
+</p>
+
 Хакатон aéza (РнД, уровень Middle). Администратор вносит регулярные и разовые платежи, система напоминает в Telegram, на почту и в колокольчике веб-панели за неделю, за 3 дня и за сутки до срока (и при просрочке) со ссылкой на платёж, пользователи отмечают оплату и следят за просрочками.
 
 **Стек:** Go (Gin, GORM) · PostgreSQL · React + TypeScript + Vite + Tailwind · Telegram-бот на Go · Docker Compose.
